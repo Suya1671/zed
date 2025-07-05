@@ -2076,7 +2076,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.6.0"
-source = "git+https://github.com/kvark/blade?rev=e0ec4e720957edd51b945b64dd85605ea54bcfe5#e0ec4e720957edd51b945b64dd85605ea54bcfe5"
+source = "git+https://github.com/kvark/blade?rev=416375211bb0b5826b3584dccdb6a43369e499ad#416375211bb0b5826b3584dccdb6a43369e499ad"
 dependencies = [
  "ash",
  "ash-window",
@@ -2109,7 +2109,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=e0ec4e720957edd51b945b64dd85605ea54bcfe5#e0ec4e720957edd51b945b64dd85605ea54bcfe5"
+source = "git+https://github.com/kvark/blade?rev=416375211bb0b5826b3584dccdb6a43369e499ad#416375211bb0b5826b3584dccdb6a43369e499ad"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2119,7 +2119,7 @@ dependencies = [
 [[package]]
 name = "blade-util"
 version = "0.2.0"
-source = "git+https://github.com/kvark/blade?rev=e0ec4e720957edd51b945b64dd85605ea54bcfe5#e0ec4e720957edd51b945b64dd85605ea54bcfe5"
+source = "git+https://github.com/kvark/blade?rev=416375211bb0b5826b3584dccdb6a43369e499ad#416375211bb0b5826b3584dccdb6a43369e499ad"
 dependencies = [
  "blade-graphics",
  "bytemuck",
@@ -4147,6 +4147,8 @@ dependencies = [
  "async-trait",
  "collections",
  "dap",
+ "dotenvy",
+ "fs",
  "futures 0.3.31",
  "gpui",
  "json_dotpath",
@@ -4676,12 +4678,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
-
-[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4834,6 +4830,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "tree-sitter-yaml",
  "ui",
  "unicode-script",
  "unicode-segmentation",
@@ -5114,7 +5111,7 @@ dependencies = [
  "collections",
  "debug_adapter_extension",
  "dirs 4.0.0",
- "dotenv",
+ "dotenvy",
  "env_logger 0.11.8",
  "extension",
  "fs",
@@ -12262,6 +12259,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "markdown",
  "node_runtime",
  "parking_lot",
  "pathdiff",
@@ -14571,6 +14569,7 @@ dependencies = [
 name = "settings_ui"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "collections",
  "command_palette",
  "command_palette_hooks",
@@ -14581,6 +14580,7 @@ dependencies = [
  "fs",
  "fuzzy",
  "gpui",
+ "language",
  "log",
  "menu",
  "paths",
@@ -14590,6 +14590,8 @@ dependencies = [
  "serde",
  "settings",
  "theme",
+ "tree-sitter-json",
+ "tree-sitter-rust",
  "ui",
  "util",
  "workspace",
@@ -17346,6 +17348,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "rust-embed",
+ "schemars",
  "serde",
  "serde_json",
  "serde_json_lenient",
@@ -19943,7 +19946,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "0.194.0"
+version = "0.195.0"
 dependencies = [
  "activity_indicator",
  "agent",
