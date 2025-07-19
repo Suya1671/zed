@@ -2,9 +2,9 @@ use std::{ops::Range, rc::Rc, time::Duration};
 
 use editor::{EditorSettings, ShowScrollbar, scroll::ScrollbarAutoHide};
 use gpui::{
-    AppContext, Axis, Context, Entity, FocusHandle, FontWeight, Length,
-    ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, Task, UniformListScrollHandle,
-    WeakEntity, transparent_black, uniform_list,
+    AppContext, Axis, Context, Entity, FocusHandle, Length, ListHorizontalSizingBehavior,
+    ListSizingBehavior, MouseButton, Point, Task, UniformListScrollHandle, WeakEntity,
+    transparent_black, uniform_list,
 };
 use settings::Settings as _;
 use ui::{
@@ -39,6 +39,10 @@ impl<const COLS: usize> TableContents<COLS> {
             TableContents::Vec(rows) => rows.len(),
             TableContents::UniformList(data) => data.row_count,
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -88,6 +92,28 @@ impl TableInteractionState {
             this.update_scrollbar_visibility(cx);
             this
         })
+    }
+
+    pub fn get_scrollbar_offset(&self, axis: Axis) -> Point<Pixels> {
+        match axis {
+            Axis::Vertical => self.vertical_scrollbar.state.scroll_handle().offset(),
+            Axis::Horizontal => self.horizontal_scrollbar.state.scroll_handle().offset(),
+        }
+    }
+
+    pub fn set_scrollbar_offset(&self, axis: Axis, offset: Point<Pixels>) {
+        match axis {
+            Axis::Vertical => self
+                .vertical_scrollbar
+                .state
+                .scroll_handle()
+                .set_offset(offset),
+            Axis::Horizontal => self
+                .horizontal_scrollbar
+                .state
+                .scroll_handle()
+                .set_offset(offset),
+        }
     }
 
     fn update_scrollbar_visibility(&mut self, cx: &mut Context<Self>) {
@@ -154,8 +180,6 @@ impl TableInteractionState {
         self.horizontal_scrollbar.hide(window, cx);
         self.vertical_scrollbar.hide(window, cx);
     }
-
-    // fn listener(this: Entity<Self>, fn: F) ->
 
     pub fn listener<E: ?Sized>(
         this: &Entity<Self>,
@@ -353,9 +377,9 @@ pub struct Table<const COLS: usize = 3> {
     headers: Option<[AnyElement; COLS]>,
     rows: TableContents<COLS>,
     interaction_state: Option<WeakEntity<TableInteractionState>>,
-    selected_item_index: Option<usize>,
     column_widths: Option<[Length; COLS]>,
-    on_click_row: Option<Rc<dyn Fn(usize, &mut Window, &mut App)>>,
+    map_row: Option<Rc<dyn Fn((usize, Div), &mut Window, &mut App) -> AnyElement>>,
+    empty_table_callback: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>>,
 }
 
 impl<const COLS: usize> Table<COLS> {
@@ -367,9 +391,9 @@ impl<const COLS: usize> Table<COLS> {
             headers: None,
             rows: TableContents::Vec(Vec::new()),
             interaction_state: None,
-            selected_item_index: None,
             column_widths: None,
-            on_click_row: None,
+            map_row: None,
+            empty_table_callback: None,
         }
     }
 
@@ -418,11 +442,6 @@ impl<const COLS: usize> Table<COLS> {
         self
     }
 
-    pub fn selected_item_index(mut self, selected_item_index: Option<usize>) -> Self {
-        self.selected_item_index = selected_item_index;
-        self
-    }
-
     pub fn header(mut self, headers: [impl IntoElement; COLS]) -> Self {
         self.headers = Some(headers.map(IntoElement::into_any_element));
         self
@@ -440,11 +459,20 @@ impl<const COLS: usize> Table<COLS> {
         self
     }
 
-    pub fn on_click_row(
+    pub fn map_row(
         mut self,
-        callback: impl Fn(usize, &mut Window, &mut App) + 'static,
+        callback: impl Fn((usize, Div), &mut Window, &mut App) -> AnyElement + 'static,
     ) -> Self {
-        self.on_click_row = Some(Rc::new(callback));
+        self.map_row = Some(Rc::new(callback));
+        self
+    }
+
+    /// Provide a callback that is invoked when the table is rendered without any rows
+    pub fn empty_table_callback(
+        mut self,
+        callback: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
+        self.empty_table_callback = Some(Rc::new(callback));
         self
     }
 }
@@ -465,7 +493,8 @@ pub fn render_row<const COLS: usize>(
     row_index: usize,
     items: [impl IntoElement; COLS],
     table_context: TableRenderContext<COLS>,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let is_striped = table_context.striped;
     let is_last = row_index == table_context.total_row_count - 1;
@@ -477,43 +506,31 @@ pub fn render_row<const COLS: usize>(
     let column_widths = table_context
         .column_widths
         .map_or([None; COLS], |widths| widths.map(Some));
-    let is_selected = table_context.selected_item_index == Some(row_index);
 
-    let row = div()
-        .w_full()
-        .border_2()
-        .border_color(transparent_black())
-        .when(is_selected, |row| {
-            row.border_color(cx.theme().colors().panel_focused_border)
-        })
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .px_1p5()
-                .py_1()
-                .when_some(bg, |row, bg| row.bg(bg))
-                .when(!is_striped, |row| {
-                    row.border_b_1()
-                        .border_color(transparent_black())
-                        .when(!is_last, |row| row.border_color(cx.theme().colors().border))
-                })
-                .children(
-                    items
-                        .map(IntoElement::into_any_element)
-                        .into_iter()
-                        .zip(column_widths)
-                        .map(|(cell, width)| base_cell_style(width, cx).child(cell)),
-                ),
-        );
+    let row = div().w_full().child(
+        h_flex()
+            .id("table_row")
+            .w_full()
+            .justify_between()
+            .px_1p5()
+            .py_1()
+            .when_some(bg, |row, bg| row.bg(bg))
+            .when(!is_striped, |row| {
+                row.border_b_1()
+                    .border_color(transparent_black())
+                    .when(!is_last, |row| row.border_color(cx.theme().colors().border))
+            })
+            .children(
+                items
+                    .map(IntoElement::into_any_element)
+                    .into_iter()
+                    .zip(column_widths)
+                    .map(|(cell, width)| base_cell_style(width, cx).child(cell)),
+            ),
+    );
 
-    if let Some(on_click) = table_context.on_click_row {
-        row.id(("table-row", row_index))
-            .on_click(move |_, window, cx| on_click(row_index, window, cx))
-            .into_any_element()
+    if let Some(map_row) = table_context.map_row {
+        map_row((row_index, row), window, cx)
     } else {
         row.into_any_element()
     }
@@ -536,20 +553,20 @@ pub fn render_header<const COLS: usize>(
         .p_2()
         .border_b_1()
         .border_color(cx.theme().colors().border)
-        .children(headers.into_iter().zip(column_widths).map(|(h, width)| {
-            base_cell_style(width, cx)
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(h)
-        }))
+        .children(
+            headers
+                .into_iter()
+                .zip(column_widths)
+                .map(|(h, width)| base_cell_style(width, cx).child(h)),
+        )
 }
 
 #[derive(Clone)]
 pub struct TableRenderContext<const COLS: usize> {
     pub striped: bool,
     pub total_row_count: usize,
-    pub selected_item_index: Option<usize>,
     pub column_widths: Option<[Length; COLS]>,
-    pub on_click_row: Option<Rc<dyn Fn(usize, &mut Window, &mut App)>>,
+    pub map_row: Option<Rc<dyn Fn((usize, Div), &mut Window, &mut App) -> AnyElement>>,
 }
 
 impl<const COLS: usize> TableRenderContext<COLS> {
@@ -558,14 +575,13 @@ impl<const COLS: usize> TableRenderContext<COLS> {
             striped: table.striped,
             total_row_count: table.rows.len(),
             column_widths: table.column_widths,
-            selected_item_index: table.selected_item_index,
-            on_click_row: table.on_click_row.clone(),
+            map_row: table.map_row.clone(),
         }
     }
 }
 
 impl<const COLS: usize> RenderOnce for Table<COLS> {
-    fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let table_context = TableRenderContext::new(&self);
         let interaction_state = self.interaction_state.and_then(|state| state.upgrade());
 
@@ -581,6 +597,7 @@ impl<const COLS: usize> RenderOnce for Table<COLS> {
         };
 
         let width = self.width;
+        let no_rows_rendered = self.rows.is_empty();
 
         let table = div()
             .when_some(width, |this, width| this.w(width))
@@ -598,7 +615,7 @@ impl<const COLS: usize> RenderOnce for Table<COLS> {
                     .map(|parent| match self.rows {
                         TableContents::Vec(items) => {
                             parent.children(items.into_iter().enumerate().map(|(index, row)| {
-                                render_row(index, row, table_context.clone(), cx)
+                                render_row(index, row, table_context.clone(), window, cx)
                             }))
                         }
                         TableContents::UniformList(uniform_list_data) => parent.child(
@@ -617,6 +634,7 @@ impl<const COLS: usize> RenderOnce for Table<COLS> {
                                                     row_index,
                                                     row,
                                                     table_context.clone(),
+                                                    window,
                                                     cx,
                                                 )
                                             })
@@ -659,6 +677,21 @@ impl<const COLS: usize> RenderOnce for Table<COLS> {
                             )
                         })
                     }),
+            )
+            .when_some(
+                no_rows_rendered
+                    .then_some(self.empty_table_callback)
+                    .flatten(),
+                |this, callback| {
+                    this.child(
+                        h_flex()
+                            .size_full()
+                            .p_3()
+                            .items_start()
+                            .justify_center()
+                            .child(callback(window, cx)),
+                    )
+                },
             )
             .when_some(
                 width.and(interaction_state.as_ref()),

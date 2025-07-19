@@ -25,8 +25,8 @@ use language::{
     DiagnosticSourceKind, FakeLspAdapter, LanguageConfig, LanguageConfigOverride, LanguageMatcher,
     LanguageName, Override, Point,
     language_settings::{
-        AllLanguageSettings, AllLanguageSettingsContent, CompletionSettings,
-        LanguageSettingsContent, LspInsertMode, PrettierSettings,
+        AllLanguageSettings, AllLanguageSettingsContent, CompletionSettings, FormatterList,
+        LanguageSettingsContent, LspInsertMode, PrettierSettings, SelectedFormatter,
     },
     tree_sitter_python,
 };
@@ -55,7 +55,7 @@ use util::{
     uri,
 };
 use workspace::{
-    CloseActiveItem, CloseAllItems, CloseInactiveItems, MoveItemToPaneInDirection, NavigationEntry,
+    CloseActiveItem, CloseAllItems, CloseOtherItems, MoveItemToPaneInDirection, NavigationEntry,
     OpenOptions, ViewId,
     item::{FollowEvent, FollowableItem, Item, ItemHandle, SaveOptions},
 };
@@ -3081,6 +3081,45 @@ async fn test_newline_documentation_comments(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_newline_comments_with_block_comment(cx: &mut TestAppContext) {
+    init_test(cx, |settings| {
+        settings.defaults.tab_size = NonZeroU32::new(4)
+    });
+
+    let lua_language = Arc::new(Language::new(
+        LanguageConfig {
+            line_comments: vec!["--".into()],
+            block_comment: Some(("--[[".into(), "]]".into())),
+            ..LanguageConfig::default()
+        },
+        None,
+    ));
+
+    let mut cx = EditorTestContext::new(cx).await;
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(lua_language), cx));
+
+    // Line with line comment should extend
+    cx.set_state(indoc! {"
+        --ˇ
+    "});
+    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
+    cx.assert_editor_state(indoc! {"
+        --
+        --ˇ
+    "});
+
+    // Line with block comment that matches line comment should not extend
+    cx.set_state(indoc! {"
+        --[[ˇ
+    "});
+    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
+    cx.assert_editor_state(indoc! {"
+        --[[
+        ˇ
+    "});
+}
+
+#[gpui::test]
 fn test_insert_with_old_selections(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
@@ -3466,6 +3505,70 @@ async fn test_indent_outdent(cx: &mut TestAppContext) {
         ˇthree
             four
     "});
+}
+
+#[gpui::test]
+async fn test_indent_yaml_comments_with_multiple_cursors(cx: &mut TestAppContext) {
+    // This is a regression test for issue #33761
+    init_test(cx, |_| {});
+
+    let mut cx = EditorTestContext::new(cx).await;
+    let yaml_language = languages::language("yaml", tree_sitter_yaml::LANGUAGE.into());
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(yaml_language), cx));
+
+    cx.set_state(
+        r#"ˇ#     ingress:
+ˇ#         api:
+ˇ#             enabled: false
+ˇ#             pathType: Prefix
+ˇ#           console:
+ˇ#               enabled: false
+ˇ#               pathType: Prefix
+"#,
+    );
+
+    // Press tab to indent all lines
+    cx.update_editor(|e, window, cx| e.tab(&Tab, window, cx));
+
+    cx.assert_editor_state(
+        r#"    ˇ#     ingress:
+    ˇ#         api:
+    ˇ#             enabled: false
+    ˇ#             pathType: Prefix
+    ˇ#           console:
+    ˇ#               enabled: false
+    ˇ#               pathType: Prefix
+"#,
+    );
+}
+
+#[gpui::test]
+async fn test_indent_yaml_non_comments_with_multiple_cursors(cx: &mut TestAppContext) {
+    // This is a test to make sure our fix for issue #33761 didn't break anything
+    init_test(cx, |_| {});
+
+    let mut cx = EditorTestContext::new(cx).await;
+    let yaml_language = languages::language("yaml", tree_sitter_yaml::LANGUAGE.into());
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(yaml_language), cx));
+
+    cx.set_state(
+        r#"ˇingress:
+ˇ  api:
+ˇ    enabled: false
+ˇ    pathType: Prefix
+"#,
+    );
+
+    // Press tab to indent all lines
+    cx.update_editor(|e, window, cx| e.tab(&Tab, window, cx));
+
+    cx.assert_editor_state(
+        r#"ˇingress:
+    ˇapi:
+        ˇenabled: false
+        ˇpathType: Prefix
+"#,
+    );
 }
 
 #[gpui::test]
@@ -4009,6 +4112,29 @@ async fn test_manipulate_immutable_lines_with_single_selection(cx: &mut TestAppC
         Y
         z
         Zˇ»
+    "});
+
+    // Test sort_lines_by_length()
+    //
+    // Demonstrates:
+    // - ∞ is 3 bytes UTF-8, but sorted by its char count (1)
+    // - sort is stable
+    cx.set_state(indoc! {"
+        «123
+        æ
+        12
+        ∞
+        1
+        æˇ»
+    "});
+    cx.update_editor(|e, window, cx| e.sort_lines_by_length(&SortLinesByLength, window, cx));
+    cx.assert_editor_state(indoc! {"
+        «æ
+        ∞
+        1
+        æ
+        12
+        123ˇ»
     "});
 
     // Test reverse_lines()
@@ -4955,7 +5081,6 @@ fn test_move_line_up_down_with_blocks(cx: &mut TestAppContext) {
                 height: Some(1),
                 render: Arc::new(|_| div().into_any()),
                 priority: 0,
-                render_in_minimap: true,
             }],
             Some(Autoscroll::fit()),
             cx,
@@ -4998,7 +5123,6 @@ async fn test_selections_and_replace_blocks(cx: &mut TestAppContext) {
                 style: BlockStyle::Sticky,
                 render: Arc::new(|_| gpui::div().into_any_element()),
                 priority: 0,
-                render_in_minimap: true,
             }],
             None,
             cx,
@@ -10012,9 +10136,9 @@ async fn test_range_format_during_save(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_document_format_manual_trigger(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
-        settings.defaults.formatter = Some(language_settings::SelectedFormatter::List(vec![
+        settings.defaults.formatter = Some(SelectedFormatter::List(FormatterList::Single(
             Formatter::LanguageServer { name: None },
-        ]))
+        )))
     });
 
     let fs = FakeFs::new(cx.executor());
@@ -10141,7 +10265,7 @@ async fn test_document_format_manual_trigger(cx: &mut TestAppContext) {
 async fn test_multiple_formatters(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
         settings.defaults.remove_trailing_whitespace_on_save = Some(true);
-        settings.defaults.formatter = Some(language_settings::SelectedFormatter::List(vec![
+        settings.defaults.formatter = Some(SelectedFormatter::List(FormatterList::Vec(vec![
             Formatter::LanguageServer { name: None },
             Formatter::CodeActions(
                 [
@@ -10151,7 +10275,7 @@ async fn test_multiple_formatters(cx: &mut TestAppContext) {
                 .into_iter()
                 .collect(),
             ),
-        ]))
+        ])))
     });
 
     let fs = FakeFs::new(cx.executor());
@@ -10403,9 +10527,9 @@ async fn test_multiple_formatters(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_organize_imports_manual_trigger(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
-        settings.defaults.formatter = Some(language_settings::SelectedFormatter::List(vec![
+        settings.defaults.formatter = Some(SelectedFormatter::List(FormatterList::Vec(vec![
             Formatter::LanguageServer { name: None },
-        ]))
+        ])))
     });
 
     let fs = FakeFs::new(cx.executor());
@@ -10611,7 +10735,7 @@ async fn test_concurrent_format_requests(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_strip_whitespace_and_format_via_lsp(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
-        settings.defaults.formatter = Some(language_settings::SelectedFormatter::Auto)
+        settings.defaults.formatter = Some(SelectedFormatter::Auto)
     });
 
     let mut cx = EditorLspTestContext::new_rust(
@@ -10866,9 +10990,10 @@ async fn test_handle_input_for_show_signature_help_auto_signature_help_true(
 
     cx.editor(|editor, _, _| {
         let signature_help_state = editor.signature_help_state.popover().cloned();
+        let signature = signature_help_state.unwrap();
         assert_eq!(
-            signature_help_state.unwrap().label,
-            "param1: u8, param2: u8"
+            signature.signatures[signature.current_signature].label,
+            "fn sample(param1: u8, param2: u8)"
         );
     });
 }
@@ -11037,9 +11162,10 @@ async fn test_handle_input_with_different_show_signature_settings(cx: &mut TestA
     cx.update_editor(|editor, _, _| {
         let signature_help_state = editor.signature_help_state.popover().cloned();
         assert!(signature_help_state.is_some());
+        let signature = signature_help_state.unwrap();
         assert_eq!(
-            signature_help_state.unwrap().label,
-            "param1: u8, param2: u8"
+            signature.signatures[signature.current_signature].label,
+            "fn sample(param1: u8, param2: u8)"
         );
         editor.signature_help_state = SignatureHelpState::default();
     });
@@ -11078,9 +11204,10 @@ async fn test_handle_input_with_different_show_signature_settings(cx: &mut TestA
     cx.editor(|editor, _, _| {
         let signature_help_state = editor.signature_help_state.popover().cloned();
         assert!(signature_help_state.is_some());
+        let signature = signature_help_state.unwrap();
         assert_eq!(
-            signature_help_state.unwrap().label,
-            "param1: u8, param2: u8"
+            signature.signatures[signature.current_signature].label,
+            "fn sample(param1: u8, param2: u8)"
         );
     });
 }
@@ -11139,9 +11266,10 @@ async fn test_signature_help(cx: &mut TestAppContext) {
     cx.editor(|editor, _, _| {
         let signature_help_state = editor.signature_help_state.popover().cloned();
         assert!(signature_help_state.is_some());
+        let signature = signature_help_state.unwrap();
         assert_eq!(
-            signature_help_state.unwrap().label,
-            "param1: u8, param2: u8"
+            signature.signatures[signature.current_signature].label,
+            "fn sample(param1: u8, param2: u8)"
         );
     });
 
@@ -11347,6 +11475,132 @@ async fn test_signature_help(cx: &mut TestAppContext) {
     "});
     cx.condition(|editor, _| !editor.signature_help_state.is_shown()) // because hidden by escape
         .await;
+}
+
+#[gpui::test]
+async fn test_signature_help_multiple_signatures(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            signature_help_provider: Some(lsp::SignatureHelpOptions {
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+
+    cx.set_state(indoc! {"
+        fn main() {
+            overloadedˇ
+        }
+    "});
+
+    cx.update_editor(|editor, window, cx| {
+        editor.handle_input("(", window, cx);
+        editor.show_signature_help(&ShowSignatureHelp, window, cx);
+    });
+
+    // Mock response with 3 signatures
+    let mocked_response = lsp::SignatureHelp {
+        signatures: vec![
+            lsp::SignatureInformation {
+                label: "fn overloaded(x: i32)".to_string(),
+                documentation: None,
+                parameters: Some(vec![lsp::ParameterInformation {
+                    label: lsp::ParameterLabel::Simple("x: i32".to_string()),
+                    documentation: None,
+                }]),
+                active_parameter: None,
+            },
+            lsp::SignatureInformation {
+                label: "fn overloaded(x: i32, y: i32)".to_string(),
+                documentation: None,
+                parameters: Some(vec![
+                    lsp::ParameterInformation {
+                        label: lsp::ParameterLabel::Simple("x: i32".to_string()),
+                        documentation: None,
+                    },
+                    lsp::ParameterInformation {
+                        label: lsp::ParameterLabel::Simple("y: i32".to_string()),
+                        documentation: None,
+                    },
+                ]),
+                active_parameter: None,
+            },
+            lsp::SignatureInformation {
+                label: "fn overloaded(x: i32, y: i32, z: i32)".to_string(),
+                documentation: None,
+                parameters: Some(vec![
+                    lsp::ParameterInformation {
+                        label: lsp::ParameterLabel::Simple("x: i32".to_string()),
+                        documentation: None,
+                    },
+                    lsp::ParameterInformation {
+                        label: lsp::ParameterLabel::Simple("y: i32".to_string()),
+                        documentation: None,
+                    },
+                    lsp::ParameterInformation {
+                        label: lsp::ParameterLabel::Simple("z: i32".to_string()),
+                        documentation: None,
+                    },
+                ]),
+                active_parameter: None,
+            },
+        ],
+        active_signature: Some(1),
+        active_parameter: Some(0),
+    };
+    handle_signature_help_request(&mut cx, mocked_response).await;
+
+    cx.condition(|editor, _| editor.signature_help_state.is_shown())
+        .await;
+
+    // Verify we have multiple signatures and the right one is selected
+    cx.editor(|editor, _, _| {
+        let popover = editor.signature_help_state.popover().cloned().unwrap();
+        assert_eq!(popover.signatures.len(), 3);
+        // active_signature was 1, so that should be the current
+        assert_eq!(popover.current_signature, 1);
+        assert_eq!(popover.signatures[0].label, "fn overloaded(x: i32)");
+        assert_eq!(popover.signatures[1].label, "fn overloaded(x: i32, y: i32)");
+        assert_eq!(
+            popover.signatures[2].label,
+            "fn overloaded(x: i32, y: i32, z: i32)"
+        );
+    });
+
+    // Test navigation functionality
+    cx.update_editor(|editor, window, cx| {
+        editor.signature_help_next(&crate::SignatureHelpNext, window, cx);
+    });
+
+    cx.editor(|editor, _, _| {
+        let popover = editor.signature_help_state.popover().cloned().unwrap();
+        assert_eq!(popover.current_signature, 2);
+    });
+
+    // Test wrap around
+    cx.update_editor(|editor, window, cx| {
+        editor.signature_help_next(&crate::SignatureHelpNext, window, cx);
+    });
+
+    cx.editor(|editor, _, _| {
+        let popover = editor.signature_help_state.popover().cloned().unwrap();
+        assert_eq!(popover.current_signature, 0);
+    });
+
+    // Test previous navigation
+    cx.update_editor(|editor, window, cx| {
+        editor.signature_help_prev(&crate::SignatureHelpPrevious, window, cx);
+    });
+
+    cx.editor(|editor, _, _| {
+        let popover = editor.signature_help_state.popover().cloned().unwrap();
+        assert_eq!(popover.current_signature, 2);
+    });
 }
 
 #[gpui::test]
@@ -14480,7 +14734,7 @@ async fn go_to_prev_overlapping_diagnostic(executor: BackgroundExecutor, cx: &mu
     executor.run_until_parked();
 
     cx.update_editor(|editor, window, cx| {
-        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic, window, cx);
+        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic::default(), window, cx);
     });
 
     cx.assert_editor_state(indoc! {"
@@ -14489,7 +14743,7 @@ async fn go_to_prev_overlapping_diagnostic(executor: BackgroundExecutor, cx: &mu
     "});
 
     cx.update_editor(|editor, window, cx| {
-        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic, window, cx);
+        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic::default(), window, cx);
     });
 
     cx.assert_editor_state(indoc! {"
@@ -14498,7 +14752,7 @@ async fn go_to_prev_overlapping_diagnostic(executor: BackgroundExecutor, cx: &mu
     "});
 
     cx.update_editor(|editor, window, cx| {
-        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic, window, cx);
+        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic::default(), window, cx);
     });
 
     cx.assert_editor_state(indoc! {"
@@ -14507,7 +14761,7 @@ async fn go_to_prev_overlapping_diagnostic(executor: BackgroundExecutor, cx: &mu
     "});
 
     cx.update_editor(|editor, window, cx| {
-        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic, window, cx);
+        editor.go_to_prev_diagnostic(&GoToPreviousDiagnostic::default(), window, cx);
     });
 
     cx.assert_editor_state(indoc! {"
@@ -15878,9 +16132,9 @@ fn completion_menu_entries(menu: &CompletionsMenu) -> Vec<String> {
 #[gpui::test]
 async fn test_document_format_with_prettier(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
-        settings.defaults.formatter = Some(language_settings::SelectedFormatter::List(vec![
+        settings.defaults.formatter = Some(SelectedFormatter::List(FormatterList::Single(
             Formatter::Prettier,
-        ]))
+        )))
     });
 
     let fs = FakeFs::new(cx.executor());
@@ -15950,7 +16204,7 @@ async fn test_document_format_with_prettier(cx: &mut TestAppContext) {
     );
 
     update_test_language_settings(cx, |settings| {
-        settings.defaults.formatter = Some(language_settings::SelectedFormatter::Auto)
+        settings.defaults.formatter = Some(SelectedFormatter::Auto)
     });
     let format = editor.update_in(cx, |editor, window, cx| {
         editor.perform_format(
@@ -21209,7 +21463,7 @@ println!("5");
         .unwrap();
     pane_1
         .update_in(cx, |pane, window, cx| {
-            pane.close_inactive_items(&CloseInactiveItems::default(), window, cx)
+            pane.close_other_items(&CloseOtherItems::default(), None, window, cx)
         })
         .await
         .unwrap();
@@ -21245,7 +21499,7 @@ println!("5");
         .unwrap();
     pane_2
         .update_in(cx, |pane, window, cx| {
-            pane.close_inactive_items(&CloseInactiveItems::default(), window, cx)
+            pane.close_other_items(&CloseOtherItems::default(), None, window, cx)
         })
         .await
         .unwrap();
@@ -22130,6 +22384,19 @@ async fn test_outdent_after_input_for_python(cx: &mut TestAppContext) {
     cx.assert_editor_state(indoc! {"
         def f() -> list[str]:
             aˇ
+    "});
+
+    // test does not outdent on typing : after case keyword
+    cx.set_state(indoc! {"
+        match 1:
+            caseˇ
+    "});
+    cx.update_editor(|editor, window, cx| {
+        editor.handle_input(":", window, cx);
+    });
+    cx.assert_editor_state(indoc! {"
+        match 1:
+            case:ˇ
     "});
 }
 
